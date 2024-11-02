@@ -1,0 +1,30 @@
+version: "3.8"
+services:
+  llama-stack-bridge:
+    build: ./nginx
+    ports:
+      - "42070:80"
+    volumes:
+      - ./nginx/nginx.conf:/usr/local/nginx/conf/nginx.conf
+      - ./nginx/transform.js:/etc/nginx/njs/transform.js:ro
+      - ./nginx/cache:/var/cache/nginx  # Mount cache directory
+      - ./nginx/logs:/usr/local/nginx/logs  # Mount logs directory
+    restart: unless-stopped
+    environment:
+      - LD_LIBRARY_PATH=/usr/local/pcre2/lib
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: "1g"
+        reservations:
+          cpus: "1"
+          memory: "512m"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
