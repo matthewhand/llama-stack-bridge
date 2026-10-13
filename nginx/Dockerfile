@@ -2,7 +2,7 @@
 # unpinned njs Git checkout and an HTTP download of obsolete Nginx sources.
 FROM alpine:3.22
 
-RUN apk add --no-cache nginx nginx-mod-http-js gettext \
+RUN apk add --no-cache nginx nginx-mod-http-js gettext-envsubst \
     && mkdir -p /etc/nginx/njs
 COPY --chown=nginx:nginx nginx.conf /etc/nginx/nginx.conf.template
 COPY --chown=nginx:nginx transform.js /etc/nginx/njs/transform.js
