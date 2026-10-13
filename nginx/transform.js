@@ -19,7 +19,8 @@ function transform_models(r) {
         failure(r, 405, 'method_not_allowed', 'Use GET for model listing.');
         return;
     }
-    r.subrequest('/__upstream_models', function(reply) {
+    try {
+        r.subrequest('/__upstream_models', function(reply) {
         if (reply.status !== 200) {
             failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
             return;
@@ -49,7 +50,10 @@ function transform_models(r) {
         } catch (e) {
             failure(r, 502, 'invalid_upstream_response', 'Unrecognized model-list response.');
         }
-    });
+        });
+    } catch (e) {
+        failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
+    }
 }
 
 function validNumber(x, min, max, integer) {
@@ -162,7 +166,8 @@ function transform_chat_completion(r) {
     for (var param2 of nums) {
         if (input[param2[0]] !== undefined) upstream[param2[0]] = input[param2[0]];
     }
-    r.subrequest('/__upstream_chat', {
+    try {
+        r.subrequest('/__upstream_chat', {
         method: 'POST',
         body: JSON.stringify(upstream)
     }, function(reply) {
@@ -196,7 +201,10 @@ function transform_chat_completion(r) {
         } catch (e) {
             failure(r, 502, 'invalid_upstream_response', 'Unrecognized chat completion response.');
         }
-    });
+        });
+    } catch (e) {
+        failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
+    }
 }
 
 export default { transform_models, transform_chat_completion };
