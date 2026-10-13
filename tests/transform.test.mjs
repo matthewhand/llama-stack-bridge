@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import handlers from '../nginx/transform.js';
 
 function run(handler, { method = 'POST', request = {}, upstreamStatus = 200,
-    upstream = {} } = {}) {
+    upstream = {}, throwSubrequest = false } = {}) {
     const response = { status: null, body: null, logs: [], upstreamRequest: null };
     const r = {
         method, requestText: typeof request === 'string' ? request : JSON.stringify(request),
@@ -11,6 +11,7 @@ function run(handler, { method = 'POST', request = {}, upstreamStatus = 200,
         error: (msg) => response.logs.push(msg),
         return: (status, body) => { response.status = status; response.body = body; },
         subrequest: (path, options, cb) => {
+            if (throwSubrequest) throw Error('synthetic transport failure');
             if (typeof options === 'function') { cb = options; options = {}; }
             response.upstreamRequest = { path, options };
             cb({ status: upstreamStatus, responseText: typeof upstream === 'string'
@@ -138,4 +139,14 @@ test('model listing fails cleanly on errors and invalid JSON', () => {
 });
 test('model listing requires GET', () => {
     assert.equal(run(handlers.transform_models, {method:'POST'}).status, 405);
+});
+
+test('transport dispatch exceptions fail closed without leaking internals', () => {
+    const chat = run(handlers.transform_chat_completion,
+        {request: valid, throwSubrequest:true});
+    const models = run(handlers.transform_models,
+        {method:'GET', throwSubrequest:true});
+    assert.equal(chat.status, 502);
+    assert.equal(models.status, 502);
+    assert.equal(chat.body.includes('synthetic transport'), false);
 });
