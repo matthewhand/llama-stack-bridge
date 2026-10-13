@@ -1,6 +1,6 @@
 # Llama Stack Bridge
 
-**Maturity: experimental / release candidate work — NOT stable, beta-qualified, or production-ready.**
+**Maturity: experimental — release hardening in progress. NOT stable, beta-qualified, or production-ready.**
 
 A small, local-first Nginx + njs adapter for a **limited legacy Meta Llama Stack API**. It translates model listings and **non-streaming, text-only** chat responses into OpenAI-style JSON. The implementation is not an official Meta/OpenAI integration and does not promise complete OpenAI API compatibility.
 
@@ -30,7 +30,7 @@ The public HTTP interface is loopback-bound by default. The bridge **has no auth
 
 The adapter currently accepts a `model` string, nonempty `messages` of text-only `system`/`user`/`assistant` roles, plus optional `max_tokens`, `temperature`, `top_p`, `top_k` and `repeat_penalty`. Other fields fail closed instead of silently changing their meaning. It maps older Llama Stack `completion_message` response shapes and normalizes ordinary token usage. **Modern Llama Stack may use different routes or schemas.**
 
-## Local quick start — after an approved container smoke test
+## Developer quick start — isolated experiments only
 
 **Prerequisites:** Docker Engine with Compose v2, an accessible legacy Llama Stack HTTP server, and a trusted local development environment. An upstream bound only to the Docker host's `127.0.0.1` may **not** be reachable via `host.docker.internal` inside the container; arrange a safely accessible Docker-network endpoint rather than exposing the upstream to the internet.
 
@@ -79,6 +79,8 @@ The synthetic suite exercises successful legacy transformations, model listings,
 No GitHub Actions workflow is supplied or needed. Do not enable hosted CI on private repositories.
 
 ## Important limitations
+
+See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 
 - **Upstream dependency:** this translation targets an older Llama Stack API, not contemporary universal OpenAI API compatibility.
 - **Security:** no endpoint authentication, no HTTPS, and no support for an authenticated upstream. Default bind is loopback only; even locally, another process may call this bridge.
