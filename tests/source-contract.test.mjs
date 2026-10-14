@@ -6,7 +6,8 @@ const read = (path) => readFileSync(new URL('../' + path, import.meta.url), 'utf
 
 test('Dockerfile uses packaged nginx/njs with unprivileged runtime', () => {
     const d = read('nginx/Dockerfile');
-    assert.match(d, /^FROM alpine:3\.22$/m);
+    assert.match(d, /^ARG ALPINE_BASE=alpine:3\.22$/m);
+    assert.match(d, /^FROM \$\{ALPINE_BASE\}$/m);
     assert.match(d, /nginx-mod-http-js/);
     assert.match(d, /gettext-envsubst/);
     assert.match(d, /^USER nginx$/m);
@@ -36,6 +37,7 @@ test('startup validates configuration and does not eval shell content', () => {
     const s = read('nginx/entrypoint.sh');
     assert.match(s, /envsubst '\$UPSTREAM_HOST \$UPSTREAM_PORT'/);
     assert.match(s, /nginx -t -c \/tmp\/llama-stack-bridge.conf/);
+    assert.match(s, /\"--check\"/);
     assert.match(s, /Invalid UPSTREAM_HOST/);
     assert.match(s, /Invalid UPSTREAM_PORT/);
     assert.doesNotMatch(s, /\beval\b/);

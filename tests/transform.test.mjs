@@ -50,7 +50,8 @@ test('stream is explicitly unsupported, without an upstream call', () => {
     assert.equal(v.upstreamRequest, null);
 });
 test('unrecognized tools and other options fail closed', () => {
-    for (const key of ['tools', 'tool_choice', 'response_format', 'n', 'user']) {
+    for (const key of ['tools', 'tool_choice', 'response_format', 'n', 'user',
+        'temperature', 'top_p', 'top_k', 'repeat_penalty']) {
         const v = run(handlers.transform_chat_completion, { request: { ...valid, [key]: 'unused' } });
         assert.equal(v.status, 400, key);
         assert.equal(v.upstreamRequest, null, key);
@@ -73,16 +74,23 @@ test('roles and multimodal message types fail closed', () => {
         assert.equal(v.status, 400);
     }
 });
-test('zero temperature is preserved without default substitution', () => {
+test('max_tokens is nested in legacy sampling_params, not sent top-level', () => {
     const v = run(handlers.transform_chat_completion, {
-        request: { ...valid, temperature: 0, top_p: 0, max_tokens: 8 },
+        request: { ...valid, max_tokens: 8 },
         upstream: complete
     });
+    assert.equal(v.status, 200);
     const sent = JSON.parse(v.upstreamRequest.options.body);
-    assert.equal(sent.temperature, 0);
-    assert.equal(sent.top_p, 0);
-    assert.equal(sent.max_tokens, 8);
+    assert.deepEqual(sent.sampling_params, { max_tokens: 8 });
+    assert.equal(Object.hasOwn(sent, 'max_tokens'), false);
+    assert.equal(Object.hasOwn(sent, 'temperature'), false);
 });
+test('omitted optional sampling leaves upstream defaults intact', () => {
+    const v = run(handlers.transform_chat_completion, { request: valid, upstream: complete });
+    const sent = JSON.parse(v.upstreamRequest.options.body);
+    assert.equal(Object.hasOwn(sent, 'sampling_params'), false);
+});
+
 test('numeric invalids fail before hitting upstream', () => {
     for (const bad of [{temperature:-1}, {top_p:2}, {max_tokens:0},
         {top_k:1.2}, {repeat_penalty:null}]) {

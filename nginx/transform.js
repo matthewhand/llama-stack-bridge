@@ -111,8 +111,9 @@ function transform_chat_completion(r) {
         return;
     }
     // Reject unsupported features rather than silently losing important semantics.
-    var supported = ['model', 'messages', 'stream', 'max_tokens', 'temperature',
-        'top_p', 'top_k', 'repeat_penalty'];
+    // The pinned 2024 legacy schema nests supported generation limits under
+    // sampling_params. Other sampling strategies require separate validation.
+    var supported = ['model', 'messages', 'stream', 'max_tokens'];
     for (var key of Object.keys(input)) {
         if (supported.indexOf(key) < 0) {
             failure(r, 400, 'unsupported_parameter', 'Unsupported request field: ' + key);
@@ -127,11 +128,7 @@ function transform_chat_completion(r) {
         failure(r, 501, 'not_implemented', 'Streaming is not implemented.');
         return;
     }
-    var nums = [
-        ['max_tokens', 1, 1000000, true], ['temperature', 0, 2, false],
-        ['top_p', 0, 1, false], ['top_k', 1, 1000000, true],
-        ['repeat_penalty', 0, 100, false]
-    ];
+    var nums = [['max_tokens', 1, 1000000, true]];
     for (var param of nums) {
         var value = input[param[0]];
         if (value !== undefined && !validNumber(value, param[1], param[2], param[3])) {
@@ -163,8 +160,8 @@ function transform_chat_completion(r) {
         messages.push(forwarded);
     }
     var upstream = { model: input.model, messages: messages, stream: false };
-    for (var param2 of nums) {
-        if (input[param2[0]] !== undefined) upstream[param2[0]] = input[param2[0]];
+    if (input.max_tokens !== undefined) {
+        upstream.sampling_params = { max_tokens: input.max_tokens };
     }
     try {
         r.subrequest('/__upstream_chat', {

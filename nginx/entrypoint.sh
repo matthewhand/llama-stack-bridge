@@ -30,4 +30,8 @@ fi
 envsubst '$UPSTREAM_HOST $UPSTREAM_PORT' \
   < /etc/nginx/nginx.conf.template > /tmp/llama-stack-bridge.conf
 nginx -t -c /tmp/llama-stack-bridge.conf
+# One-shot preflight: validate only, without starting Nginx workers.
+if [ "${1:-}" = "--check" ]; then
+  exit 0
+fi
 exec nginx -c /tmp/llama-stack-bridge.conf -g 'daemon off;'

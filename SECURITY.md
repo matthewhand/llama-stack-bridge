@@ -20,6 +20,30 @@ The Compose port mapping defaults to `127.0.0.1:42070:8080`. This protects again
 
 These controls are visible in source but have **not** been validated in a live container or against a security scanner.
 
+## Local qualification status (15 October 2026)
+
+Actual Node.js v22.22.3 ran the 23 unit/source tests successfully
+on Ubuntu-GTX. Eight Python offline fixture tests passed, including
+tests proving bad results are detected with and without Python
+optimization. They exercise **simulated** HTTP fixture behavior;
+there is still no demonstrated actual Nginx/njs HTTP integration,
+real Llama Stack upstream compatibility, or container containment.
+A historical 31 October 2024 Llama Stack source revision
+(`37b330b4ef24a9253abba07cf906bf4ac3af6e55`) exposed a
+previously untested top-level sampling mismatch. The bridge now nests
+`max_tokens` and rejects other unverified sampling knobs, but no live
+upstream version has been qualified.
+
+The additional `tests/runtime.compose.yaml` is for a **separately
+approved disposable Docker daemon only**. It requires explicit immutable
+Python and Alpine base-image references. Mutable Alpine package
+repositories remain a supply-chain blocker until exact dependency
+versions/hashes are verified and captured. The `internal` Docker
+network and loopback host bindings are not substitutes for independent
+outbound isolation checks. All resource ownership must be verified
+before removing test-created networks, containers or images.
+See [tests/VERIFICATION.md](tests/VERIFICATION.md) for the gates.
+
 ## Unresolved risks / release gates
 
 - No endpoint authentication or TLS. Only use within a controlled local environment.

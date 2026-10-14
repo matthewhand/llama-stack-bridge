@@ -28,7 +28,17 @@ The public HTTP interface is loopback-bound by default. The bridge **has no auth
 | Tools/function calls, images, audio, JSON schema, multimodal messages, `/v1/responses` | Unsupported; no translation promised | Not implemented |
 | Native OpenAI authentication, TLS, upstream bearer token forwarding | Unsupported | No internet/LAN deployment |
 
-The adapter currently accepts a `model` string, nonempty `messages` of text-only `system`/`user`/`assistant` roles, plus optional `max_tokens`, `temperature`, `top_p`, `top_k` and `repeat_penalty`. Other fields fail closed instead of silently changing their meaning. It maps older Llama Stack `completion_message` response shapes and normalizes ordinary token usage. **Modern Llama Stack may use different routes or schemas.**
+The adapter currently accepts a `model` string, nonempty `messages` of text-only `system`/`user`/`assistant` roles, plus optional `max_tokens` (nested under legacy `sampling_params`). Sampling strategy controls such as `temperature`, `top_p`, `top_k` and `repeat_penalty` are now rejected rather than falsely forwarded as flat fields. Other fields fail closed instead of silently changing their meaning. It maps older Llama Stack `completion_message` response shapes and normalizes ordinary token usage. **Modern Llama Stack may use different routes or schemas.**
+
+**Legacy source contract:** On 15 October 2026, source inspection pinned a
+historical [Llama Stack inference API revision](https://github.com/meta-llama/llama-stack/blob/37b330b4ef24a9253abba07cf906bf4ac3af6e55/llama_stack/apis/inference/inference.py)
+(31 October 2024) and its [model-list API](https://github.com/meta-llama/llama-stack/blob/37b330b4ef24a9253abba07cf906bf4ac3af6e55/llama_stack/apis/models/models.py).
+That revision uses legacy `/inference/chat_completion` and `/models/list`
+routes, the `model` request field, and nested `sampling_params`.
+The bridge now translates `max_tokens` into the nested structure and
+rejects other unverified sampling options. **This establishes a
+source-level reference, not a pinned deployable upstream version or
+live compatibility evidence.**
 
 ## Developer quick start — isolated experiments only
 
@@ -71,12 +81,40 @@ The Compose service runs unprivileged, drops Linux capabilities, uses a read-onl
 Node.js 20+ is required **only for the test harness**, not inside the Nginx container. There are no npm dependencies to install.
 
 ```sh
-node --test tests/transform.test.mjs
+node --test tests/*.test.mjs
+python3 -B -m unittest discover -s tests -p 'test_*.py' -v
+python3 -B tests/verify_http.py --self-test
+python3 -O tests/verify_http.py --self-test
 ```
 
-The synthetic suite exercises successful legacy transformations, model listings, numeric defaults, rejected streaming and tool options, malformed inputs, unsupported message types, generic upstream errors, missing upstream responses and sensitive-log regression checks. **17 synthetic test cases passed in an isolated V8 evaluation on 13 October 2026; a clean Node runner, real njs, image build and upstream integration have not yet been independently validated.**
+On 15 October 2026, the existing **23 JavaScript tests passed 23/23 under
+actual Node.js v22.22.3 on Ubuntu-GTX** (18 translation checks and five
+source/deployment checks). The new **eight Python offline harness tests
+passed 8/8**, including mock HTTP observations, exact wrong-payload and
+leaked-header detection, and both ordinary and optimized-Python
+negative controls. These tests use fictional data. This is **not**
+evidence of a running Nginx container or a compatible live Llama
+Stack server. No containers have been built or executed.
 
 No GitHub Actions workflow is supplied or needed. Do not enable hosted CI on private repositories.
+
+### Disposable runtime qualification (not yet executed)
+
+See [tests/VERIFICATION.md](tests/VERIFICATION.md) for the **existing,
+approval-gated runtime acceptance procedure** and its three files:
+`mock_upstream.py`, `verify_http.py` and `runtime.compose.yaml`.
+A dedicated disposable Linux VM, a distinct Docker daemon, adequate
+headroom, verified immutable base-image/Python-image digests, explicit
+permission for downloads/builds and separate permission for container
+execution are required **before** use. The fixture must not connect to
+production or handle real prompts. The bridge entrypoint now supports
+`--check` to run the same configuration validation and `nginx -t` in
+a one-shot container **before starting regular Nginx workers**.
+
+The disposable Compose file uses a project-specific namespace and
+ownership labels. These do not by themselves establish network
+isolation, provenance, absence of leaks or complete cleanup. Independent
+runtime inspection remains mandatory.
 
 ## Important limitations
 
@@ -87,7 +125,7 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - **Content:** text-only chat. Streaming, tools and nontext message content are intentionally rejected.
 - **Resource limits:** the Nginx config caps request body size at 64 KiB and buffered subrequest responses at 1 MiB; long histories and large replies can fail.
 - **Error behavior:** invalid user requests return HTTP 400; unsupported streaming returns 501; upstream failures or malformed upstream responses return generic 502 without returning upstream bodies to clients.
-- **Build reproducibility:** Alpine is pinned to its minor series, not an immutable image digest or package hash. Fresh-build proof and a dependency vulnerability assessment are still required.
+- **Build reproducibility:** normal development builds default to Alpine 3.22; an immutable base-image reference is injectable using the `ALPINE_BASE` build argument. The disposable verification Compose file requires a digest value, but Alpine package indexes and package checksums are not yet reproducibly pinned. Fresh-build proof and a dependency vulnerability assessment are still required.
 - **Releases:** no verified live Llama Stack version matrix, independent load test or production incident runbook exists.
 
 ## Release acceptance gates
@@ -95,7 +133,7 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - [x] Separate original prototype claims from demonstrated functionality.
 - [x] Add fail-closed synthetic API checks and remove conversation-body debug logging in source.
 - [x] Add rootless, loopback-only Compose configuration and explicit validated upstream substitution in source.
-- [ ] Independently run the Node 20+ suite and inspect the exact test results.
+- [x] Run the Node 20+ unit/source suite locally (23/23 on Node v22.22.3, 15 October 2026) and Python offline harness checks (8/8).
 - [ ] Independently build the image and run `nginx -t` from a clean checkout on target architectures.
 - [ ] Exercise `/healthz`, models and chat with a **synthetic, local** mock upstream over real HTTP.
 - [ ] Pin and verify one explicitly supported legacy Llama Stack version, and document contemporary upstream incompatibilities.
@@ -111,7 +149,9 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - `nginx/entrypoint.sh` — strict upstream configuration validation and local Nginx test.
 - `nginx/Dockerfile` — packaged Alpine Nginx/njs, unprivileged runtime.
 - `docker-compose.yaml` — loopback-only and resource-constrained deployment.
-- `tests/transform.test.mjs` — dependency-free synthetic regressions.
+- `tests/transform.test.mjs` and `tests/source-contract.test.mjs` — Node synthetic and source regressions.
+- `tests/mock_upstream.py`, `tests/verify_http.py`, `tests/test_harness.py`, and `tests/runtime.compose.yaml` — offline mock, real-HTTP verifier, fail-closed checks and disposable verification configuration.
+- `tests/VERIFICATION.md` — explicit runtime approval gates, evidence and cleanup requirements.
 
 ## License
 

@@ -1,0 +1,63 @@
+# Disposable verification only. NOT production Compose.
+name: ${VERIFY_PROJECT:?Choose a unique test-owned project name}
+services:
+  mock:
+    image: ${PYTHON_IMAGE_DIGEST:?Set approved immutable Python image digest}
+    command: ["python3", "-B", "/fixtures/mock_upstream.py", "--host", "0.0.0.0", "--port", "8765"]
+    volumes:
+      - ./mock_upstream.py:/fixtures/mock_upstream.py:ro
+    ports:
+      - "127.0.0.1:42071:8765"
+    read_only: true
+    user: "65534:65534"
+    tmpfs: [/tmp]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8765/__admin/state', timeout=2); raise SystemExit(0 if r.status == 200 else 1)"]
+      interval: 3s
+      timeout: 2s
+      retries: 3
+      start_period: 3s
+    pids_limit: 32
+    mem_limit: 96m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [verification]
+    labels:
+      org.llama-stack-bridge.verification: "true"
+      org.llama-stack-bridge.owner: ${VERIFY_PROJECT}
+  bridge:
+    build:
+      context: ../nginx
+      dockerfile: Dockerfile
+      args:
+        ALPINE_BASE: ${ALPINE_IMAGE_DIGEST:?Supply approved immutable Alpine image digest}
+    environment:
+      UPSTREAM_HOST: mock
+      UPSTREAM_PORT: "8765"
+    ports:
+      - "127.0.0.1:42070:8080"
+    depends_on:
+      mock:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,noexec,size=32m
+    user: nginx
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    restart: "no"
+    networks: [verification]
+    labels:
+      org.llama-stack-bridge.verification: "true"
+      org.llama-stack-bridge.owner: ${VERIFY_PROJECT}
+networks:
+  verification:
+    internal: true
+    labels:
+      org.llama-stack-bridge.verification: "true"
+      org.llama-stack-bridge.owner: ${VERIFY_PROJECT}
