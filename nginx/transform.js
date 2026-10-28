@@ -1,5 +1,8 @@
 // njs handlers for a deliberately small legacy Llama Stack API subset.
 // No request, response, authorization header or prompt content is logged.
+// Check raw upstream bytes before decoding/parsing; JavaScript string length
+// is measured in UTF-16 code units and cannot enforce a UTF-8 byte cap.
+const MAX_UPSTREAM_BYTES = 1024 * 1024;
 function failure(r, status, type, message) {
     r.headersOut['Content-Type'] = 'application/json';
     r.return(status, JSON.stringify({ error: { type: type, message: message } }));
@@ -8,6 +11,34 @@ function failure(r, status, type, message) {
 function success(r, payload) {
     r.headersOut['Content-Type'] = 'application/json';
     r.return(200, JSON.stringify(payload));
+}
+
+function boundedReplyText(reply) {
+    // njs exposes responseBuffer for subrequests; its length is raw bytes.
+    // Fail closed rather than relying on a text-character approximation.
+    if (!reply.responseBuffer || typeof reply.responseBuffer.length !== 'number' ||
+        reply.responseBuffer.length > MAX_UPSTREAM_BYTES ||
+        typeof reply.responseText !== 'string') {
+        throw new Error('invalid upstream size');
+    }
+    return reply.responseText;
+}
+
+// njs must expose a secure random source; never silently fall back to Math.random.
+function completionId() {
+    if (typeof crypto === 'undefined' ||
+        typeof crypto.getRandomValues !== 'function') {
+        throw new Error('secure random source unavailable');
+    }
+    // Uint32Array is explicitly supported in the njs Web Crypto API.
+    // Four independent 32-bit words provide 128 bits of entropy.
+    var words = new Uint32Array(4);
+    crypto.getRandomValues(words);
+    var hex = '';
+    for (var i = 0; i < words.length; i++) {
+        hex += ('00000000' + words[i].toString(16)).slice(-8);
+    }
+    return 'chatcmpl-' + hex;
 }
 
 function plainObject(value) {
@@ -26,7 +57,7 @@ function transform_models(r) {
             return;
         }
         try {
-            var raw = JSON.parse(reply.responseText);
+            var raw = JSON.parse(boundedReplyText(reply));
             var models = Array.isArray(raw) ? raw : (plainObject(raw) ? raw.data : null);
             if (!Array.isArray(models)) {
                 throw new Error('models response is not an array');
@@ -173,23 +204,26 @@ function transform_chat_completion(r) {
             return;
         }
         try {
-            var raw = JSON.parse(reply.responseText);
+            var raw = JSON.parse(boundedReplyText(reply));
             if (!plainObject(raw) || !plainObject(raw.completion_message) ||
                 raw.completion_message.role !== 'assistant') {
                 throw new Error('missing assistant completion');
             }
             var content = textContent(raw.completion_message.content);
             if (content === null) throw new Error('unsupported completion content');
+            var reason = finishReason(raw.completion_message.stop_reason);
+            if (reason === null) {
+                throw new Error('unknown upstream termination');
+            }
             var output = {
-                id: 'chatcmpl-' + Date.now().toString(36) + '-' +
-                    Math.random().toString(36).slice(2),
+                id: completionId(),
                 object: 'chat.completion',
                 created: Math.floor(Date.now() / 1000),
                 model: input.model,
                 choices: [{
                     index: 0,
                     message: { role: 'assistant', content: content },
-                    finish_reason: finishReason(raw.completion_message.stop_reason)
+                    finish_reason: reason
                 }]
             };
             var usage = normalizeUsage(raw.usage);

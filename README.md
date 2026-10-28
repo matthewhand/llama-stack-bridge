@@ -53,9 +53,9 @@ live compatibility evidence.**
    cp .env.sample .env
    ```
 
-2. Set `UPSTREAM_HOST` and `UPSTREAM_PORT` in `.env`. Host accepts a DNS name or IPv4 address; port must be between 1 and 65535. Do not include `http://`, URL paths, or credentials. The sample uses `host.docker.internal:42069`, which only works when a suitable Docker host gateway is reachable.
+2. Set `UPSTREAM_HOST` and `UPSTREAM_PORT` in `.env`. Host accepts structurally valid DNS labels or canonical dotted-decimal IPv4; port must be between 1 and 65535. Do not include `http://`, URL paths, or credentials. The sample uses `host.docker.internal:42069`, which only works when a suitable Docker host gateway is reachable.
 
-3. Once the operator approves a disposable build, run:
+3. **Builds now fail closed without independently approved provenance inputs.** Before any separately authorised disposable build, export `ALPINE_IMAGE_DIGEST` (verified platform-correct `alpine@sha256:…`), `APK_REPOSITORY` (verified immutable HTTPS snapshot, not a mutable mirror), and exact `NGINX_APK_VERSION`, `NJS_APK_VERSION`, and `GETTEXT_APK_VERSION`. Record checksums and versions of all transitive installed packages. No digests, package versions or snapshot URLs are assumed in this repository. Only after approving these inputs and a disposable build, run:
 
    ```sh
    docker compose build
@@ -87,7 +87,7 @@ python3 -B tests/verify_http.py --self-test
 python3 -O tests/verify_http.py --self-test
 ```
 
-On 15 October 2026, the existing **23 JavaScript tests passed 23/23 under
+On 15 October 2026, the original **23 JavaScript tests passed 23/23 under
 actual Node.js v22.22.3 on Ubuntu-GTX** (18 translation checks and five
 source/deployment checks). The new **eight Python offline harness tests
 passed 8/8**, including mock HTTP observations, exact wrong-payload and
@@ -96,7 +96,17 @@ negative controls. These tests use fictional data. This is **not**
 evidence of a running Nginx container or a compatible live Llama
 Stack server. No containers have been built or executed.
 
-No GitHub Actions workflow is supplied or needed. Do not enable hosted CI on private repositories.
+On 28–29 October 2026, a separate, private, offline source-remediation
+worktree passed 31/31 Node and 9/9 Python checks, including strict hostname
+input cases, unknown stop reasons, njs-compatible secure-ID format and
+UTF-8 byte-bounded synthetic responses. Four deliberately faulty source
+variants were rejected by the regression tests.
+Neither the packaged njs cryptographic API nor the changed Nginx buffering
+directives have yet been exercised in a real container. This work is not
+merged into the public PR branch.
+
+No GitHub Actions workflow is supplied. Do not enable hosted CI or spend
+external build/inference resources without separate maintainer approval.
 
 ### Disposable runtime qualification (not yet executed)
 
@@ -123,9 +133,9 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - **Upstream dependency:** this translation targets an older Llama Stack API, not contemporary universal OpenAI API compatibility.
 - **Security:** no endpoint authentication, no HTTPS, and no support for an authenticated upstream. Default bind is loopback only; even locally, another process may call this bridge.
 - **Content:** text-only chat. Streaming, tools and nontext message content are intentionally rejected.
-- **Resource limits:** the Nginx config caps request body size at 64 KiB and buffered subrequest responses at 1 MiB; long histories and large replies can fail.
-- **Error behavior:** invalid user requests return HTTP 400; unsupported streaming returns 501; upstream failures or malformed upstream responses return generic 502 without returning upstream bodies to clients.
-- **Build reproducibility:** normal development builds default to Alpine 3.22; an immutable base-image reference is injectable using the `ALPINE_BASE` build argument. The disposable verification Compose file requires a digest value, but Alpine package indexes and package checksums are not yet reproducibly pinned. Fresh-build proof and a dependency vulnerability assessment are still required.
+- **Resource limits:** the Nginx config caps request body size at 64 KiB, raw-byte buffered subrequest responses at 1 MiB, and source-level per-client concurrency at eight requests. Explicit proxy buffers and disabled proxy temp-file spill are proposed but still need runtime validation. The 30-second upstream read timeout is an **idle I/O timeout, not a hard total request deadline**.
+- **Error behavior:** invalid user requests return HTTP 400; unsupported streaming returns 501; upstream failures, malformed upstream responses and unknown completion stop reasons return generic 502 without returning upstream bodies to clients. Successful completion IDs require `crypto.getRandomValues` with documented `Uint32Array` input in the packaged njs runtime; without it, chat must fail closed. API availability still needs runtime proof.
+- **Build reproducibility:** neither a mutable Alpine base tag nor unversioned package installation is provided by default. Build inputs now require a verified image digest, HTTPS package repository snapshot and explicit package versions. The actual snapshot immutability, transitive checksums and resulting image reproducibility have **not** been independently proven. Fresh-build proof and a dependency vulnerability assessment remain required.
 - **Releases:** no verified live Llama Stack version matrix, independent load test or production incident runbook exists.
 
 ## Release acceptance gates
@@ -138,7 +148,7 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - [ ] Exercise `/healthz`, models and chat with a **synthetic, local** mock upstream over real HTTP.
 - [ ] Pin and verify one explicitly supported legacy Llama Stack version, and document contemporary upstream incompatibilities.
 - [ ] Prove default host-binding, UID, mounts, memory behavior and absence of sensitive data in logs.
-- [ ] Review malformed bodies, upstream resets/timeouts, high concurrency, startup shutdown and supported platform coverage.
+- [ ] Verify idle upstream timeouts, oversized responses, proxy buffers, NGINX/njs `crypto.getRandomValues` support, high concurrency, startup/shutdown and platform coverage over real HTTP.
 - [ ] Independently audit threat model, dependency provenance, deployment documentation, and versioned release artifacts.
 - [ ] Assign a stable version **only after** all scoped gates pass; unsupported advanced features need not be added, but must remain explicit.
 

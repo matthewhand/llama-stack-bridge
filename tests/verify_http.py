@@ -39,7 +39,8 @@ def loopback_url(url):
     return url.rstrip("/")
 
 
-def request(base, path, method="GET", payload=None, raw=False, privacy=False):
+def request(base, path, method="GET", payload=None, raw=False, privacy=False,
+            timeout=TIMEOUT):
     require(path.startswith("/") and not path.startswith("//"), "Invalid test route")
     headers = {"Accept": "application/json"}
     data = None
@@ -51,7 +52,7 @@ def request(base, path, method="GET", payload=None, raw=False, privacy=False):
                         "X-Private-Canary": CUSTOM, "X-Test-Secret": CUSTOM})
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=TIMEOUT) as res:
+        with urllib.request.urlopen(req, timeout=timeout) as res:
             return res.status, res.read(MAX_RESPONSE + 1), res.headers.get("Content-Type", "")
     except urllib.error.HTTPError as res:
         return res.code, res.read(MAX_RESPONSE + 1), res.headers.get("Content-Type", "")
@@ -224,6 +225,25 @@ def run_suite(bridge, mock):
                 check_calls(mock, route, 1,
                             translated if route == "chat" else None)
             case(route + " " + mode + " error category and privacy", bad_upstream)
+
+    for mode in ("finish_unknown", "finish_missing"):
+        def invalid_termination(mode=mode):
+            reset(mock, "chat", mode)
+            response_json(request(bridge, "/v1/chat/completions", method="POST",
+                                  payload=valid, privacy=True), 502,
+                          "invalid_upstream_response")
+            check_calls(mock, "chat", 1, translated)
+        case("chat " + mode + " fail-closed termination", invalid_termination)
+
+    def upstream_idle_timeout():
+        reset(mock, "chat", "slow")
+        # The client must outwait the configured Nginx 30s idle read timeout.
+        # A client-side timeout is a failure, not evidence that Nginx timed out.
+        response_json(request(bridge, "/v1/chat/completions", method="POST",
+                              payload=valid, privacy=True, timeout=45),
+                      502, "upstream_error")
+        check_calls(mock, "chat", 1, translated)
+    case("chat upstream idle timeout returns sanitized 502", upstream_idle_timeout)
 
     for mode, expected_content, reason, has_usage in (
         ("unicode", "こんにちは 🌿", "stop", True),

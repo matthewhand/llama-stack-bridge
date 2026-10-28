@@ -1,6 +1,14 @@
 services:
   llama-stack-bridge:
-    build: ./nginx
+    # Intentionally fails closed until immutable/snapshot inputs are verified.
+    build:
+      context: ./nginx
+      args:
+        ALPINE_BASE: ${ALPINE_IMAGE_DIGEST:?Approve exact Alpine image digest}
+        APK_REPOSITORY: ${APK_REPOSITORY:?Approve immutable HTTPS Alpine package snapshot}
+        NGINX_APK_VERSION: ${NGINX_APK_VERSION:?Approve nginx package version}
+        NJS_APK_VERSION: ${NJS_APK_VERSION:?Approve nginx njs module package version}
+        GETTEXT_APK_VERSION: ${GETTEXT_APK_VERSION:?Approve envsubst package version}
     # Loopback only: do not expose unprotected LLM traffic to LAN/WAN.
     ports:
       - "127.0.0.1:42070:8080"

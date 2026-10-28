@@ -66,6 +66,22 @@ class MockFixtureChecks(unittest.TestCase):
                                    payload={"route": "models", "mode": "unknown"})
         self.assertEqual(code, 400)
 
+    def test_unknown_stop_reason_fixture_modes(self):
+        for mode in ("finish_unknown", "finish_missing"):
+            with self.subTest(mode=mode):
+                verify.reset(self.base, "chat", mode)
+                code, body, _ = verify.request(self.base,
+                    "/inference/chat_completion", method="POST", payload={
+                        "model": "fixture-model",
+                        "messages": [{"role": "user", "content": "Fictional"}],
+                        "stream": False})
+                self.assertEqual(code, 200)
+                completion = json.loads(body)["completion_message"]
+                if mode == "finish_unknown":
+                    self.assertEqual(completion["stop_reason"], "future_finish")
+                else:
+                    self.assertNotIn("stop_reason", completion)
+
     def test_wrong_upstream_payload_fails_closed(self):
         payload = {"model": "actual", "messages": []}
         verify.request(self.base, "/inference/chat_completion",

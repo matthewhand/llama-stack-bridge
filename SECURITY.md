@@ -12,10 +12,13 @@ The Compose port mapping defaults to `127.0.0.1:42070:8080`. This protects again
 
 - Runs Nginx as an unprivileged Linux user, on port 8080 inside the container.
 - Drops Linux capabilities, blocks privilege escalation, mounts the root filesystem read-only and uses a bounded temporary filesystem.
-- Validates the configured upstream DNS name/IPv4 address and TCP port before rendering the server config.
+- Performs source-level structural validation of upstream DNS labels, canonical IPv4 and TCP port before rendering the server config; runtime qualification remains outstanding.
 - Disables Nginx access logging and avoids logging prompt and response bodies from njs handlers.
 - Drops incoming request headers on internal upstream proxy locations. This means that **client Authorization headers are intentionally not forwarded**; private upstreams requiring credentials are not supported.
-- Limits request bodies to 64 KiB and buffered subrequest results to 1 MiB.
+- Limits client bodies to 64 KiB and raw-byte buffered subrequest replies to 1 MiB; decoded Unicode is not used as a byte-size proxy. Proposed proxy limits disable disk-buffer spill and limit per-source-IP public request concurrency to eight; the limits have not been measured in a container.
+- Uses `crypto.getRandomValues` with njs-documented `Uint32Array` for 128-bit response IDs and rejects successful completions when no secure random source is available. Packaged njs compatibility must be demonstrated.
+- Rejects unknown/missing chat stop reasons as sanitized upstream errors rather than claiming successful termination.
+- Caps upstream *idle read intervals* at 30 seconds, but does **not** impose a hard total wall-clock HTTP deadline.
 - Maps upstream errors to generic 502 JSON rather than reflecting private upstream bodies.
 
 These controls are visible in source but have **not** been validated in a live container or against a security scanner.
@@ -48,9 +51,10 @@ See [tests/VERIFICATION.md](tests/VERIFICATION.md) for the gates.
 
 - No endpoint authentication or TLS. Only use within a controlled local environment.
 - Upstream traffic is HTTP and may cross local networks. Do not assume encryption, integrity or confidentiality in transit.
-- Alpine dependencies are not pinned to image digests and exact package checksums.
+- Builds require external image-digest, immutable HTTPS package-snapshot and exact package-version inputs, but these values and **transitive package hashes have not been independently verified**. Input names alone do not prove dependency immutability.
 - The Nginx/njs image has not been independently built; module availability, filesystem permissions and runtime behavior remain unverified.
-- No denial-of-service, resource exhaustion, concurrency or malformed-protocol fuzz testing has been performed.
+- Source-level resource limits are proposed, but real denial-of-service, memory/concurrency, Nginx timeout and malformed-protocol testing has not been performed.
+- Writable bounded `/tmp` is needed by Nginx under a read-only root; per-directory ownership, symlink resistance and file-lifecycle handling remain runtime audit gates.
 - There is no pinned, verified Llama Stack upstream version or support policy.
 - Even with access logging disabled, other infrastructure (host, reverse proxy, Docker, upstream) may still log prompts or credentials.
 

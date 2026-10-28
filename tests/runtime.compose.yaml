@@ -33,6 +33,10 @@ services:
       dockerfile: Dockerfile
       args:
         ALPINE_BASE: ${ALPINE_IMAGE_DIGEST:?Supply approved immutable Alpine image digest}
+        APK_REPOSITORY: ${APK_REPOSITORY:?Supply approved immutable HTTPS package snapshot}
+        NGINX_APK_VERSION: ${NGINX_APK_VERSION:?Supply verified nginx version}
+        NJS_APK_VERSION: ${NJS_APK_VERSION:?Supply verified nginx njs module version}
+        GETTEXT_APK_VERSION: ${GETTEXT_APK_VERSION:?Supply verified gettext-envsubst version}
     environment:
       UPSTREAM_HOST: mock
       UPSTREAM_PORT: "8765"

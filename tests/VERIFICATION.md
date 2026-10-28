@@ -58,6 +58,10 @@ approvals, verified input digests and independent resource ownership:
 export VERIFY_PROJECT='lsb-verify-UNIQUE-ID'
 export PYTHON_IMAGE_DIGEST='python:3.12-alpine@sha256:APPROVED_DIGEST'
 export ALPINE_IMAGE_DIGEST='alpine@sha256:APPROVED_DIGEST'
+export APK_REPOSITORY='https://APPROVED_IMMUTABLE_PACKAGE_SNAPSHOT'
+export NGINX_APK_VERSION='APPROVED_EXACT_PACKAGE_VERSION'
+export NJS_APK_VERSION='APPROVED_EXACT_PACKAGE_VERSION'
+export GETTEXT_APK_VERSION='APPROVED_EXACT_PACKAGE_VERSION'
 docker context show
 docker compose -f tests/runtime.compose.yaml config -q
 docker image inspect "$PYTHON_IMAGE_DIGEST" "$ALPINE_IMAGE_DIGEST"
@@ -83,6 +87,12 @@ docker compose -f tests/runtime.compose.yaml logs --no-color > /tmp/lsb-compose.
 python3 -B tests/verify_http.py --scan-only --log-file /tmp/lsb-compose.log
 docker compose -f tests/runtime.compose.yaml ps -a
 ```
+
+The verifier includes a deliberate 35-second idle upstream and a bounded
+45-second client deadline for testing the Nginx 30-second read timeout.
+A client-side timeout **fails** the test; this does not establish a hard
+total request deadline. The verifier must also confirm njs secure random
+availability (chat IDs) and parseable Nginx configuration before release.
 
 The verifier connects **only** to numeric loopback ports 42070/42071,
 uses fictional payloads, and compares full JSON translation, HTTP

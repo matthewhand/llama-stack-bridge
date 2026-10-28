@@ -6,7 +6,8 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODES = {"default", "http_503", "malformed_json", "malformed_shape",
-         "oversize", "usage_invalid", "finish_length", "unicode"}
+         "oversize", "usage_invalid", "finish_length", "unicode",
+         "finish_unknown", "finish_missing", "slow"}
 ROUTES = {"models", "chat"}
 MAX_BODY = 131072
 MODEL_LIST = [{"identifier": "fixture-model", "provider_id": "fixture-lab"},
@@ -129,6 +130,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, {"unexpected": "private"})
         if mode == "oversize":
             return self.reply(200, b'{"data":"' + b'x' * (1024 * 1024 + 512) + b'"}', raw=True)
+        if mode == "slow":
+            # Deliberate 35s idle upstream for separately approved runtime tests.
+            import time
+            time.sleep(35)
         if route == "models":
             return self.reply(200, MODEL_LIST)
         data = json.loads(json.dumps(REPLY))
@@ -138,6 +143,10 @@ class Handler(BaseHTTPRequestHandler):
             data["completion_message"]["stop_reason"] = "out_of_tokens"
         if mode == "unicode":
             data["completion_message"]["content"] = "こんにちは 🌿"
+        if mode == "finish_unknown":
+            data["completion_message"]["stop_reason"] = "future_finish"
+        if mode == "finish_missing":
+            del data["completion_message"]["stop_reason"]
         return self.reply(200, data)
 
 

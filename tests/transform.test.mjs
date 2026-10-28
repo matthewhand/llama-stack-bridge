@@ -14,8 +14,10 @@ function run(handler, { method = 'POST', request = {}, upstreamStatus = 200,
             if (throwSubrequest) throw Error('synthetic transport failure');
             if (typeof options === 'function') { cb = options; options = {}; }
             response.upstreamRequest = { path, options };
-            cb({ status: upstreamStatus, responseText: typeof upstream === 'string'
-                ? upstream : JSON.stringify(upstream) });
+            const responseText = typeof upstream === 'string'
+                ? upstream : JSON.stringify(upstream);
+            cb({ status: upstreamStatus, responseText,
+                responseBuffer: Buffer.from(responseText, 'utf8') });
         }
     };
     handler(r);
@@ -157,4 +159,87 @@ test('transport dispatch exceptions fail closed without leaking internals', () =
     assert.equal(chat.status, 502);
     assert.equal(models.status, 502);
     assert.equal(chat.body.includes('synthetic transport'), false);
+});
+
+test('unknown and missing upstream stop reason fail closed without completion', () => {
+    for (const stop_reason of ['unknown_future_reason', null, 42, undefined]) {
+        const response = { ...complete, completion_message: {
+            ...complete.completion_message, stop_reason } };
+        const v = run(handlers.transform_chat_completion, { request: valid, upstream: response });
+        assert.equal(v.status, 502, String(stop_reason));
+        assert.equal(v.json().error.type, 'invalid_upstream_response');
+        assert.equal(v.body.includes('unknown_future_reason'), false);
+    }
+});
+
+test('completion IDs use cryptographically sourced 128-bit hex without timestamps', () => {
+    const ids = new Set();
+    for (let i = 0; i < 32; i++) {
+        const v = run(handlers.transform_chat_completion, { request: valid, upstream: complete });
+        assert.equal(v.status, 200);
+        const id = v.json().id;
+        assert.match(id, /^chatcmpl-[a-f0-9]{32}$/);
+        ids.add(id);
+    }
+    assert.equal(ids.size, 32);
+});
+
+test('synthetic oversized upstream text fails closed before JSON parsing', () => {
+    const over = 'x'.repeat(1024 * 1024 + 1);
+    for (const [handler, method, request] of [
+        [handlers.transform_models, 'GET', {}],
+        [handlers.transform_chat_completion, 'POST', valid]]) {
+        const v = run(handler, { method, request, upstream: over });
+        assert.equal(v.status, 502);
+        assert.equal(v.json().error.type, 'invalid_upstream_response');
+        assert.equal(v.body.includes(over.slice(0, 50)), false);
+    }
+});
+
+test('missing secure random API fails closed without predictable ID fallback', () => {
+    const existing = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    try {
+        Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+        const v = run(handlers.transform_chat_completion, { request: valid, upstream: complete });
+        assert.equal(v.status, 502);
+        assert.equal(v.json().error.type, 'invalid_upstream_response');
+        assert.equal(v.body.includes('random'), false);
+    } finally {
+        if (existing) Object.defineProperty(globalThis, 'crypto', existing);
+        else delete globalThis.crypto;
+    }
+});
+
+
+test('completion ID requests documented njs-compatible Uint32Array entropy', () => {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    let calls = 0;
+    try {
+        Object.defineProperty(globalThis, 'crypto', { configurable: true,
+            value: { getRandomValues: (values) => {
+                assert.equal(values.constructor, Uint32Array);
+                assert.equal(values.length, 4);
+                calls++;
+                values.set([0, 1, 0xabcdef01, 0xffffffff]);
+                return values;
+            } } });
+        const v = run(handlers.transform_chat_completion, { request: valid, upstream: complete });
+        assert.equal(v.status, 200);
+        assert.equal(v.json().id, 'chatcmpl-0000000000000001abcdef01ffffffff');
+        assert.equal(calls, 1);
+    } finally {
+        if (descriptor) Object.defineProperty(globalThis, 'crypto', descriptor);
+        else delete globalThis.crypto;
+    }
+});
+
+test('UTF-8 multibyte upstream exceeds raw byte cap despite short text length', () => {
+    const oversized = JSON.stringify({completion_message: {role: 'assistant',
+        content: '🌿'.repeat(300000), stop_reason: 'end_of_turn'}});
+    assert.ok(oversized.length < 1024 * 1024, 'text length is below raw byte cap');
+    assert.ok(Buffer.byteLength(oversized, 'utf8') > 1024 * 1024, 'UTF-8 bytes exceed cap');
+    const v = run(handlers.transform_chat_completion, {request: valid, upstream: oversized});
+    assert.equal(v.status, 502);
+    assert.equal(v.json().error.type, 'invalid_upstream_response');
+    assert.equal(v.body.includes('🌿'), false);
 });
