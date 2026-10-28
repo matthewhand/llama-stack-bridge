@@ -1,4 +1,15 @@
+# Local settings may contain credentials; only public examples are trackable.
 .env
+.env.*
+!.env.sample
+
+# Do not accidentally commit local private-key material.
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_ed25519
 .repopackignore
 *.txt
 *.log
