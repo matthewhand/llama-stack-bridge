@@ -21,6 +21,18 @@ class VerificationError(Exception):
     pass
 
 
+class RejectRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A redirect can escape numeric loopback and forward synthetic credentials.
+        raise VerificationError("Unexpected redirect; no redirected request was sent")
+
+
+# Never inherit HTTP_PROXY/HTTPS_PROXY or follow server-selected redirects.
+# A URL allowlist alone does not constrain urllib's default redirect handler.
+HTTP_OPENER = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), RejectRedirect())
+
+
 def require(condition, message):
     if not condition:
         raise VerificationError(message)
@@ -41,6 +53,7 @@ def loopback_url(url):
 
 def request(base, path, method="GET", payload=None, raw=False, privacy=False,
             timeout=TIMEOUT):
+    loopback_url(base)  # Enforce the numeric-loopback constraint even for direct callers.
     require(path.startswith("/") and not path.startswith("//"), "Invalid test route")
     headers = {"Accept": "application/json"}
     data = None
@@ -52,7 +65,7 @@ def request(base, path, method="GET", payload=None, raw=False, privacy=False,
                         "X-Private-Canary": CUSTOM, "X-Test-Secret": CUSTOM})
     req = urllib.request.Request(base + path, data=data, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
+        with HTTP_OPENER.open(req, timeout=timeout) as res:
             return res.status, res.read(MAX_RESPONSE + 1), res.headers.get("Content-Type", "")
     except urllib.error.HTTPError as res:
         return res.code, res.read(MAX_RESPONSE + 1), res.headers.get("Content-Type", "")

@@ -2,11 +2,15 @@
 import ast
 import json
 import importlib.util
+import os
+from unittest import mock as unittest_mock
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import unittest
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = Path(__file__).resolve().parent
 
@@ -38,6 +42,14 @@ class MockFixtureChecks(unittest.TestCase):
 
     def setUp(self):
         verify.reset(self.base)
+
+    def test_mock_cli_defaults_loopback_and_disposable_runtime_binds_explicitly(self):
+        fixture = (HERE / "mock_upstream.py").read_text()
+        runtime = (HERE / "runtime.compose.yaml").read_text()
+        self.assertIn('parser.add_argument("--host", default="127.0.0.1")', fixture)
+        self.assertIn('"--host", "0.0.0.0"', runtime)
+        self.assertIn('127.0.0.1:42071:8765', runtime)
+        self.assertIn('internal: true', runtime)
 
     def test_model_fixture_and_observations(self):
         obj = json.loads(verify.request(self.base, "/models/list")[1])
@@ -81,6 +93,46 @@ class MockFixtureChecks(unittest.TestCase):
                     self.assertEqual(completion["stop_reason"], "future_finish")
                 else:
                     self.assertNotIn("stop_reason", completion)
+
+    def test_verifier_http_client_rejects_outbound_redirect_and_environment_proxy(self):
+        # Import under a synthetic proxy setting, catching regressions that
+        # accidentally enable urllib's default environment ProxyHandler.
+        with unittest_mock.patch.dict(os.environ,
+                                      {"http_proxy": "http://127.0.0.1:9",
+                                       "no_proxy": ""}):
+            fresh = load_module("verify_http.py", "verifier_proxy_boundary")
+        proxy_handlers = [h for h in fresh.HTTP_OPENER.handlers
+                          if isinstance(h, urllib.request.ProxyHandler)]
+        self.assertEqual(proxy_handlers, [], "Environment proxy handler is active")
+
+        with self.assertRaises(verify.VerificationError):
+            verify.request("http://example.invalid:80", "/no-network")
+        with self.assertRaises(verify.VerificationError):
+            verify.request("http://localhost:12345", "/no-network")
+
+        destination = self.base + "/models/list"
+        class RedirectFixture(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                return
+
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", destination)
+                self.end_headers()
+
+        redirector = ThreadingHTTPServer(("127.0.0.1", 0), RedirectFixture)
+        worker = threading.Thread(target=redirector.serve_forever, daemon=True)
+        worker.start()
+        try:
+            redirect_base = "http://127.0.0.1:" + str(redirector.server_port)
+            with self.assertRaisesRegex(verify.VerificationError, "Unexpected redirect"):
+                verify.request(redirect_base, "/redirect", privacy=True)
+            self.assertEqual(verify.observations(self.base), [],
+                             "Redirected HTTP request reached the destination")
+        finally:
+            redirector.shutdown()
+            worker.join(timeout=3)
+            redirector.server_close()
 
     def test_wrong_upstream_payload_fails_closed(self):
         payload = {"model": "actual", "messages": []}

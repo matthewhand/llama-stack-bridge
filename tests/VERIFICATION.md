@@ -94,6 +94,12 @@ A client-side timeout **fails** the test; this does not establish a hard
 total request deadline. The verifier must also confirm njs secure random
 availability (chat IDs) and parseable Nginx configuration before release.
 
+The standalone mock CLI defaults to 127.0.0.1; only this disposable
+Compose file explicitly binds it to 0.0.0.0 *inside the dedicated internal
+container network*, with its published test port still loopback-only.
+The Python verifier disables inherited HTTP proxy settings and rejects
+redirects rather than following a server-selected destination.
+
 The verifier connects **only** to numeric loopback ports 42070/42071,
 uses fictional payloads, and compares full JSON translation, HTTP
 status/error categories, numeric boundaries, Unicode, assistant history,
