@@ -145,7 +145,9 @@ function transform_chat_completion(r) {
     // The pinned 2024 legacy schema nests supported generation limits under
     // sampling_params. Other sampling strategies require separate validation.
     var supported = ['model', 'messages', 'stream', 'max_tokens'];
-    for (var key of Object.keys(input)) {
+    var inputKeys = Object.keys(input);
+    for (var keyIndex = 0; keyIndex < inputKeys.length; keyIndex++) {
+        var key = inputKeys[keyIndex];
         if (supported.indexOf(key) < 0) {
             failure(r, 400, 'unsupported_parameter', 'Unsupported request field: ' + key);
             return;
@@ -160,7 +162,8 @@ function transform_chat_completion(r) {
         return;
     }
     var nums = [['max_tokens', 1, 1000000, true]];
-    for (var param of nums) {
+    for (var paramIndex = 0; paramIndex < nums.length; paramIndex++) {
+        var param = nums[paramIndex];
         var value = input[param[0]];
         if (value !== undefined && !validNumber(value, param[1], param[2], param[3])) {
             failure(r, 400, 'invalid_request_error', 'Invalid ' + param[0] + '.');
@@ -168,14 +171,17 @@ function transform_chat_completion(r) {
         }
     }
     var messages = [];
-    for (var msg of input.messages) {
+    for (var messageIndex = 0; messageIndex < input.messages.length; messageIndex++) {
+        var msg = input.messages[messageIndex];
         if (!plainObject(msg) ||
             ['system', 'user', 'assistant'].indexOf(msg.role) < 0 ||
             typeof msg.content !== 'string') {
             failure(r, 400, 'invalid_request_error', 'Only text-only system, user and assistant messages are supported.');
             return;
         }
-        for (var mk of Object.keys(msg)) {
+        var messageKeys = Object.keys(msg);
+        for (var fieldIndex = 0; fieldIndex < messageKeys.length; fieldIndex++) {
+            var mk = messageKeys[fieldIndex];
             if (['role', 'content', 'stop_reason'].indexOf(mk) < 0) {
                 failure(r, 400, 'unsupported_parameter', 'Unsupported message field: ' + mk);
                 return;

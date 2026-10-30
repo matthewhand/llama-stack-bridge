@@ -71,6 +71,12 @@ test('startup validates configuration and does not eval shell content', () => {
     assert.match(s, /if \[ "\$entrypoint_mode" = "--check" \]; then/);
     assert.doesNotMatch(s, /\beval\b/);
 });
+test('packaged njs parser rejects for-of loops, use compatible indexed iteration', () => {
+    const source = read('nginx/transform.js');
+    assert.doesNotMatch(source, /\bfor\s*\(\s*(?:(?:var|let|const)\s+)?[A-Za-z_$][\w$]*\s+of\b/);
+    assert.match(source, /for \(var messageIndex = 0;/);
+});
+
 test('njs does not log request or response data', () => {
     const s = read('nginx/transform.js');
     assert.doesNotMatch(s, /\br\.error\(/);
