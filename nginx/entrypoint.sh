@@ -45,12 +45,32 @@ if [ "${#UPSTREAM_PORT}" -gt 5 ] || [ "$UPSTREAM_PORT" -lt 1 ] || [ "$UPSTREAM_P
   exit 2
 fi
 
-# Only substitute our two values; preserve Nginx's own $variables.
-envsubst '$UPSTREAM_HOST $UPSTREAM_PORT' \
+# Resolve once at startup through musl getent (including Docker extra_hosts).
+# ngx.fetch requires a numeric URL here; the original name remains its Host header.
+valid_ipv4() {
+  case "$1" in ""|*[!0-9.]*|.*|*.) return 1 ;; esac
+  old_ifs=$IFS
+  IFS=.
+  set -- $1
+  IFS=$old_ifs
+  [ "$#" -eq 4 ] || return 1
+  for octet do
+    case "$octet" in 0|[1-9]|[1-9][0-9]|1[0-9][0-9]|2[0-4][0-9]|25[0-5]) ;; *) return 1 ;; esac
+  done
+}
+UPSTREAM_IP=$(getent ahostsv4 "$UPSTREAM_HOST" | awk 'NR == 1 { print $1; exit }')
+valid_ipv4 "$UPSTREAM_IP" || {
+  echo "Unable to resolve UPSTREAM_HOST to IPv4" >&2
+  exit 2
+}
+export UPSTREAM_IP
+
+# Only substitute our three validated values; preserve Nginx's own $variables.
+envsubst '$UPSTREAM_HOST $UPSTREAM_IP $UPSTREAM_PORT' \
   < /etc/nginx/nginx.conf.template > /tmp/llama-stack-bridge.conf
-nginx -t -c /tmp/llama-stack-bridge.conf
+nginx -e stderr -t -c /tmp/llama-stack-bridge.conf
 # One-shot preflight: validate only, without starting Nginx workers.
 if [ "$entrypoint_mode" = "--check" ]; then
   exit 0
 fi
-exec nginx -c /tmp/llama-stack-bridge.conf -g 'daemon off;'
+exec nginx -e stderr -c /tmp/llama-stack-bridge.conf -g 'daemon off;'

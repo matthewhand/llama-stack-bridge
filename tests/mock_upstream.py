@@ -6,15 +6,17 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODES = {"default", "http_503", "malformed_json", "malformed_shape",
-         "oversize", "usage_invalid", "finish_length", "unicode",
-         "finish_unknown", "finish_missing", "slow"}
+         "oversize", "oversize_chunked", "oversize_unicode", "oversize_chunked_hard_cap", "exact_limit", "exact_limit_chunked",
+         "finish_length", "unicode",
+         "finish_unknown", "finish_missing", "slow", "slow_short"}
 ROUTES = {"models", "chat"}
 MAX_BODY = 131072
 MODEL_LIST = [{"identifier": "fixture-model", "provider_id": "fixture-lab"},
               {"id": "second-model"}]
 REPLY = {"completion_message": {
-    "role": "assistant", "content": "Fixture response", "stop_reason": "end_of_turn"
-}, "usage": {"input_tokens": 4, "output_tokens": 7}}
+    "role": "assistant", "content": "Fixture response", "stop_reason": "end_of_turn",
+    "tool_calls": []
+}}
 
 
 class FixtureServer(ThreadingHTTPServer):
@@ -28,6 +30,7 @@ class FixtureServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
     server_version = "SyntheticFixture"
     sys_version = ""
 
@@ -45,6 +48,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         try:
             self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def reply_chunked(self, status, chunks):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+        try:
+            for chunk in chunks:
+                self.wfile.write(("%X\r\n" % len(chunk)).encode("ascii"))
+                self.wfile.write(chunk + b"\r\n")
+            self.wfile.write(b"0\r\n\r\n")
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -99,10 +115,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_upstream(self, route, body):
         if route == "chat":
-            # 2024-10-31 legacy contract: top-level model/messages/stream;
-            # generation limit, if supplied, belongs in sampling_params.
-            if not isinstance(body, dict) or (set(body) -
-                    {"model", "messages", "stream", "sampling_params"}):
+            # llama-stack 0.0.47 / 2024-10-31 source contract: model/messages,
+            # optional SamplingParams (greedy by default), and text-only messages.
+            allowed = {"model", "messages", "sampling_params", "stream"}
+            if not isinstance(body, dict) or set(body) - allowed:
                 return self.reply(422, {"error": "invalid legacy fixture shape"})
             if not isinstance(body.get("model"), str) or not isinstance(
                     body.get("messages"), list) or body.get("stream", False) is not False:
@@ -113,6 +129,17 @@ class Handler(BaseHTTPRequestHandler):
             if "max_tokens" in params and (type(params["max_tokens"]) is not int or
                     params["max_tokens"] < 1):
                 return self.reply(422, {"error": "invalid token bound"})
+            for message in body["messages"]:
+                if not isinstance(message, dict) or message.get("role") not in (
+                        "system", "user", "assistant") or not isinstance(
+                        message.get("content"), str):
+                    return self.reply(422, {"error": "invalid legacy message"})
+                if message["role"] == "assistant":
+                    if set(message) != {"role", "content", "stop_reason", "tool_calls"} or \
+                            not isinstance(message["stop_reason"], str) or message["tool_calls"] != []:
+                        return self.reply(422, {"error": "invalid legacy assistant history"})
+                elif set(message) != {"role", "content"}:
+                    return self.reply(422, {"error": "invalid legacy user/system message"})
         with self.server.lock:
             mode = self.server.modes[route]
             self.server.observations.append({
@@ -128,8 +155,31 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, b'{"unclosed":', raw=True)
         if mode == "malformed_shape":
             return self.reply(200, {"unexpected": "private"})
-        if mode == "oversize":
-            return self.reply(200, b'{"data":"' + b'x' * (1024 * 1024 + 512) + b'"}', raw=True)
+        if mode in ("exact_limit", "exact_limit_chunked"):
+            prefix = b'[]'
+            data = prefix + b' ' * (1024 * 1024 - len(prefix))
+            if mode == "exact_limit_chunked":
+                return self.reply_chunked(200, (data[i:i + 16384]
+                                                for i in range(0, len(data), 16384)))
+            return self.reply(200, data, raw=True)
+        if mode in ("oversize", "oversize_chunked"):
+            data = b'{"data":"PRIVATE_UPSTREAM_CANARY' + b'x' * (1024 * 1024 + 512) + b'"}'
+            if mode == "oversize_chunked":
+                return self.reply_chunked(200, (data[i:i + 16384]
+                                                for i in range(0, len(data), 16384)))
+            return self.reply(200, data, raw=True)
+        if mode == "oversize_unicode":
+            data = json.dumps([{"identifier": "PRIVATE_UPSTREAM_CANARY" + "あ" * 350000}],
+                              ensure_ascii=False).encode("utf-8")
+            return self.reply(200, data, raw=True)
+        if mode == "oversize_chunked_hard_cap":
+            data = b'{"data":"PRIVATE_UPSTREAM_CANARY' + b'x' * (10 * 1024 * 1024 + 512) + b'"}'
+            return self.reply_chunked(200, (data[i:i + 16384]
+                                            for i in range(0, len(data), 16384)))
+        if mode == "slow_short":
+            # Hold a small number of requests concurrently to exercise global limits.
+            import time
+            time.sleep(3)
         if mode == "slow":
             # Deliberate 35s idle upstream for separately approved runtime tests.
             import time
@@ -137,8 +187,6 @@ class Handler(BaseHTTPRequestHandler):
         if route == "models":
             return self.reply(200, MODEL_LIST)
         data = json.loads(json.dumps(REPLY))
-        if mode == "usage_invalid":
-            data["usage"]["input_tokens"] = -2
         if mode == "finish_length":
             data["completion_message"]["stop_reason"] = "out_of_tokens"
         if mode == "unicode":

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Fail-closed real-HTTP acceptance checks against an approved disposable bridge."""
 import argparse
+import concurrent.futures
 import ipaddress
 import json
 import pathlib
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -164,7 +166,7 @@ def run_suite(bridge, mock):
         "max_tokens": 8}
     translated = {"model": "fixture-model", "messages": [
         {"role": "system", "content": "Fictional setup"},
-        {"role": "assistant", "content": "Fictional history", "stop_reason": "end_of_turn"},
+        {"role": "assistant", "content": "Fictional history", "stop_reason": "end_of_turn", "tool_calls": []},
         {"role": "user", "content": "さくら 🌿"}],
         "stream": False, "sampling_params": {"max_tokens": 8}}
 
@@ -177,8 +179,8 @@ def run_suite(bridge, mock):
         require(obj.get("choices") == [{"index": 0, "message": {
             "role": "assistant", "content": "Fixture response"}, "finish_reason": "stop"}],
             "Wrong completion choice transformation")
-        require(obj.get("usage") == {"prompt_tokens": 4, "completion_tokens": 7,
-                                     "total_tokens": 11}, "Wrong token usage transformation")
+        require("usage" not in obj,
+            "Pinned llama-stack 0.0.47 ChatCompletionResponse does not define usage")
         require(isinstance(obj.get("id"), str) and obj["id"].startswith("chatcmpl-"),
                 "Missing completion id")
         check_calls(mock, "chat", 1, translated)
@@ -258,13 +260,37 @@ def run_suite(bridge, mock):
         check_calls(mock, "chat", 1, translated)
     case("chat upstream idle timeout returns sanitized 502", upstream_idle_timeout)
 
-    for mode, expected_content, reason, has_usage in (
-        ("unicode", "こんにちは 🌿", "stop", True),
-        ("finish_length", "Fixture response", "length", True),
-        ("usage_invalid", "Fixture response", "stop", False),
+    def global_concurrency_limit():
+        reset(mock, "models", "slow_short")
+        barrier = threading.Barrier(5)
+
+        def one_request():
+            barrier.wait(timeout=4)
+            return request(bridge, "/v1/models", method="GET", privacy=True, timeout=8)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            futures = [pool.submit(one_request) for _ in range(5)]
+            results = [future.result(timeout=10) for future in futures]
+        statuses = [item[0] for item in results]
+        require(statuses.count(200) == 4 and statuses.count(429) == 1,
+                "Global four-request limit expected four 200 and one 429; got "
+                + repr(statuses))
+        for item in results:
+            if item[0] == 200:
+                obj = response_json(item, 200)
+                require(obj["object"] == "list", "Unexpected concurrent model response")
+            else:
+                require(not any(secret.encode() in item[1]
+                                for secret in (TOKEN, COOKIE, CUSTOM, PRIVATE)),
+                        "Private canary leaked in concurrency rejection")
+        check_calls(mock, "models", 4)
+    case("global upstream concurrency cap admits four and rejects fifth", global_concurrency_limit)
+
+    for mode, expected_content, reason in (
+        ("unicode", "こんにちは 🌿", "stop"),
+        ("finish_length", "Fixture response", "length"),
     ):
-        def special(mode=mode, expected_content=expected_content,
-                    reason=reason, has_usage=has_usage):
+        def special(mode=mode, expected_content=expected_content, reason=reason):
             reset(mock, "chat", mode)
             obj = response_json(request(bridge, "/v1/chat/completions", method="POST",
                                         payload=valid), 200)
@@ -272,7 +298,8 @@ def run_suite(bridge, mock):
                     "Wrong Unicode/response content")
             require(obj["choices"][0]["finish_reason"] == reason,
                     "Wrong finish reason")
-            require(("usage" in obj) == has_usage, "Invalid usage normalization")
+            require("usage" not in obj,
+                    "Pinned llama-stack 0.0.47 ChatCompletionResponse has no usage field")
             check_calls(mock, "chat", 1, translated)
         case("chat " + mode + " response handling", special)
 
@@ -290,20 +317,40 @@ def run_suite(bridge, mock):
                 "Private canary leaked in Nginx-generated error")
     case("Nginx-generated client body size boundary", large_request)
 
-    def large_upstream():
-        reset(mock, "models", "oversize")
-        status, body, ctype = request(bridge, "/v1/models", privacy=True)
-        require(status in (500, 502),
-                "Oversized upstream reply incorrectly accepted or ignored")
-        require(not any(s.encode() in body for s in (TOKEN, COOKIE, CUSTOM, PRIVATE)),
-                "Private canary leaked in oversized upstream error")
-        if "application/json" in ctype.lower():
-            require(status == 502, "Unexpected JSON upstream size error status")
-            response_json((status, body, ctype), 502, "upstream_error")
+    def oversized_upstream(route, mode):
+        if route == "models":
+            path, method, payload, expected = "/v1/models", "GET", None, None
         else:
-            require(status == 500, "Unexpected Nginx-generated size error")
+            path, method, payload, expected = "/v1/chat/completions", "POST", valid, translated
+        reset(mock, route, mode)
+        status, body, ctype = request(bridge, path, method=method,
+                                      payload=payload, privacy=True)
+        require(status == 502,
+                "Oversized upstream response must produce bounded HTTP 502")
+        response_json((status, body, ctype), 502, "upstream_error")
+        check_calls(mock, route, 1, expected)
+
+    def exact_upstream_boundary():
+        reset(mock, "models", "exact_limit")
+        result = response_json(request(bridge, "/v1/models", privacy=True), 200)
+        require(result == {"object": "list", "data": []},
+                "Exactly 1 MiB upstream response must be accepted")
         check_calls(mock, "models", 1)
-    case("oversized upstream buffer failure category", large_upstream)
+    case("exact 1 MiB upstream response boundary", exact_upstream_boundary)
+
+    def exact_chunked_upstream_boundary():
+        reset(mock, "models", "exact_limit_chunked")
+        result = response_json(request(bridge, "/v1/models", privacy=True), 200)
+        require(result == {"object": "list", "data": []},
+                "Exactly 1 MiB chunked upstream response must be accepted")
+        check_calls(mock, "models", 1)
+    case("exact 1 MiB chunked upstream response boundary", exact_chunked_upstream_boundary)
+
+    for mode in ("oversize", "oversize_chunked", "oversize_unicode", "oversize_chunked_hard_cap"):
+        case("models bounded fetch rejects " + mode,
+             lambda mode=mode: oversized_upstream("models", mode))
+        case("chat bounded fetch rejects " + mode,
+             lambda mode=mode: oversized_upstream("chat", mode))
 
     def health():
         reset(mock)

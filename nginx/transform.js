@@ -1,7 +1,9 @@
 // njs handlers for a deliberately small legacy Llama Stack API subset.
 // No request, response, authorization header or prompt content is logged.
-// Check raw upstream bytes before decoding/parsing; JavaScript string length
-// is measured in UTF-16 code units and cannot enforce a UTF-8 byte cap.
+// njs 0.9.6 caps Content-Length at MAX_UPSTREAM_BYTES but permits chunked
+// buffering up to 10x that value. The post-text UTF-8 byte guard enforces the
+// exact 1 MiB API limit before JSON parsing; global Nginx concurrency bounds
+// aggregate chunked buffering.
 const MAX_UPSTREAM_BYTES = 1024 * 1024;
 function failure(r, status, type, message) {
     r.headersOut['Content-Type'] = 'application/json';
@@ -11,17 +13,6 @@ function failure(r, status, type, message) {
 function success(r, payload) {
     r.headersOut['Content-Type'] = 'application/json';
     r.return(200, JSON.stringify(payload));
-}
-
-function boundedReplyText(reply) {
-    // njs exposes responseBuffer for subrequests; its length is raw bytes.
-    // Fail closed rather than relying on a text-character approximation.
-    if (!reply.responseBuffer || typeof reply.responseBuffer.length !== 'number' ||
-        reply.responseBuffer.length > MAX_UPSTREAM_BYTES ||
-        typeof reply.responseText !== 'string') {
-        throw new Error('invalid upstream size');
-    }
-    return reply.responseText;
 }
 
 // njs must expose a secure random source; never silently fall back to Math.random.
@@ -45,45 +36,63 @@ function plainObject(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function transform_models(r) {
+async function transform_models(r) {
     if (r.method !== 'GET') {
         failure(r, 405, 'method_not_allowed', 'Use GET for model listing.');
         return;
     }
+    var reply;
     try {
-        r.subrequest('/__upstream_models', function(reply) {
-        if (reply.status !== 200) {
-            failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
-            return;
-        }
-        try {
-            var raw = JSON.parse(boundedReplyText(reply));
-            var models = Array.isArray(raw) ? raw : (plainObject(raw) ? raw.data : null);
-            if (!Array.isArray(models)) {
-                throw new Error('models response is not an array');
-            }
-            var result = models.map(function(model) {
-                if (!plainObject(model)) {
-                    throw new Error('invalid model entry');
-                }
-                var id = model.identifier || model.id;
-                if (typeof id !== 'string' || !id) {
-                    throw new Error('missing model identifier');
-                }
-                return {
-                    id: id,
-                    object: 'model',
-                    owned_by: (typeof model.provider_id === 'string' && model.provider_id)
-                        ? model.provider_id : 'llama-stack'
-                };
-            });
-            success(r, { object: 'list', data: result });
-        } catch (e) {
-            failure(r, 502, 'invalid_upstream_response', 'Unrecognized model-list response.');
-        }
+        reply = await ngx.fetch(r.variables.upstream_models_url, {
+            method: 'GET',
+            headers: { Accept: 'application/json', Host: r.variables.upstream_host },
+            max_response_body_size: MAX_UPSTREAM_BYTES
         });
     } catch (e) {
+        // Fetch rejects oversized Content-Length bodies and chunked bodies >10 MiB.
+        // The exact 1 MiB check below rejects smaller chunked overflow.
         failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
+        return;
+    }
+    if (reply.status !== 200) {
+        failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
+        return;
+    }
+    var responseText;
+    try {
+        responseText = await reply.text();
+    } catch (e) {
+        failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
+        return;
+    }
+    if (Buffer.byteLength(responseText, 'utf8') > MAX_UPSTREAM_BYTES) {
+        failure(r, 502, 'upstream_error', 'Model-list upstream unavailable.');
+        return;
+    }
+    try {
+        var raw = JSON.parse(responseText);
+        var models = Array.isArray(raw) ? raw : (plainObject(raw) ? raw.data : null);
+        if (!Array.isArray(models)) {
+            throw new Error('models response is not an array');
+        }
+        var result = models.map(function(model) {
+            if (!plainObject(model)) {
+                throw new Error('invalid model entry');
+            }
+            var id = model.identifier || model.id;
+            if (typeof id !== 'string' || !id) {
+                throw new Error('missing model identifier');
+            }
+            return {
+                id: id,
+                object: 'model',
+                owned_by: (typeof model.provider_id === 'string' && model.provider_id)
+                    ? model.provider_id : 'llama-stack'
+            };
+        });
+        success(r, { object: 'list', data: result });
+    } catch (e) {
+        failure(r, 502, 'invalid_upstream_response', 'Unrecognized model-list response.');
     }
 }
 
@@ -104,13 +113,13 @@ function finishReason(reason) {
 
 function textContent(content) {
     if (typeof content === 'string') return content;
-    if (Array.isArray(content) && content.length > 0 &&
-        content.every(function(part) {
-            return plainObject(part) && part.type === 'text' && typeof part.text === 'string';
-        })) {
-        return content.map(function(part) { return part.text; }).join('');
+    if (!Array.isArray(content)) return null;
+    var text = '';
+    for (var i = 0; i < content.length; i++) {
+        if (typeof content[i] !== 'string') return null;
+        text += content[i];
     }
-    return null;
+    return text;
 }
 
 function normalizeUsage(u) {
@@ -124,7 +133,7 @@ function normalizeUsage(u) {
         total_tokens: prompt + completion };
 }
 
-function transform_chat_completion(r) {
+async function transform_chat_completion(r) {
     if (r.method !== 'POST') {
         failure(r, 405, 'method_not_allowed', 'Use POST for chat completions.');
         return;
@@ -193,54 +202,80 @@ function transform_chat_completion(r) {
             return;
         }
         var forwarded = { role: msg.role, content: msg.content };
-        if (msg.role === 'assistant') forwarded.stop_reason = msg.stop_reason || 'end_of_turn';
+        if (msg.role === 'assistant') {
+            forwarded.stop_reason = msg.stop_reason || 'end_of_turn';
+            forwarded.tool_calls = [];
+        }
         messages.push(forwarded);
     }
     var upstream = { model: input.model, messages: messages, stream: false };
     if (input.max_tokens !== undefined) {
         upstream.sampling_params = { max_tokens: input.max_tokens };
     }
+    var reply;
     try {
-        r.subrequest('/__upstream_chat', {
-        method: 'POST',
-        body: JSON.stringify(upstream)
-    }, function(reply) {
-        if (reply.status !== 200) {
-            failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
-            return;
-        }
-        try {
-            var raw = JSON.parse(boundedReplyText(reply));
-            if (!plainObject(raw) || !plainObject(raw.completion_message) ||
-                raw.completion_message.role !== 'assistant') {
-                throw new Error('missing assistant completion');
-            }
-            var content = textContent(raw.completion_message.content);
-            if (content === null) throw new Error('unsupported completion content');
-            var reason = finishReason(raw.completion_message.stop_reason);
-            if (reason === null) {
-                throw new Error('unknown upstream termination');
-            }
-            var output = {
-                id: completionId(),
-                object: 'chat.completion',
-                created: Math.floor(Date.now() / 1000),
-                model: input.model,
-                choices: [{
-                    index: 0,
-                    message: { role: 'assistant', content: content },
-                    finish_reason: reason
-                }]
-            };
-            var usage = normalizeUsage(raw.usage);
-            if (usage !== null) output.usage = usage;
-            success(r, output);
-        } catch (e) {
-            failure(r, 502, 'invalid_upstream_response', 'Unrecognized chat completion response.');
-        }
+        reply = await ngx.fetch(r.variables.upstream_chat_url, {
+            method: 'POST',
+            headers: {
+                Accept: 'application/json',
+                'Content-Type': 'application/json',
+                Host: r.variables.upstream_host
+            },
+            body: JSON.stringify(upstream),
+            max_response_body_size: MAX_UPSTREAM_BYTES
         });
     } catch (e) {
+        // Fetch enforces Content-Length and the 10 MiB chunked parser ceiling; the
+        // exact 1 MiB application limit is checked after text() below.
         failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
+        return;
+    }
+    if (reply.status !== 200) {
+        failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
+        return;
+    }
+    var responseText;
+    try {
+        responseText = await reply.text();
+    } catch (e) {
+        failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
+        return;
+    }
+    if (Buffer.byteLength(responseText, 'utf8') > MAX_UPSTREAM_BYTES) {
+        failure(r, 502, 'upstream_error', 'Chat upstream unavailable.');
+        return;
+    }
+    try {
+        var raw = JSON.parse(responseText);
+        if (!plainObject(raw) || !plainObject(raw.completion_message) ||
+            raw.completion_message.role !== 'assistant' ||
+            (raw.completion_message.tool_calls !== undefined &&
+             (!Array.isArray(raw.completion_message.tool_calls) ||
+              raw.completion_message.tool_calls.length !== 0))) {
+            throw new Error('missing or unsupported assistant completion');
+        }
+        var content = textContent(raw.completion_message.content);
+        if (content === null) throw new Error('unsupported completion content');
+        var reason = finishReason(raw.completion_message.stop_reason);
+        if (reason === null) {
+            throw new Error('unknown upstream termination');
+        }
+        var output = {
+            id: completionId(),
+            object: 'chat.completion',
+            created: Math.floor(Date.now() / 1000),
+            model: input.model,
+            choices: [{
+                index: 0,
+                message: { role: 'assistant', content: content },
+                finish_reason: reason
+            }]
+        };
+        var usage = normalizeUsage(raw.usage);
+        if (usage !== null) output.usage = usage;
+        success(r, output);
+    } catch (e) {
+        failure(r, 502, 'invalid_upstream_response', 'Unrecognized chat completion response.');
     }
 }
 

@@ -60,7 +60,8 @@ class MockFixtureChecks(unittest.TestCase):
 
     def test_chat_fixture_and_exact_body(self):
         payload = {"model": "fixture-model", "messages": [{"role": "user",
-                   "content": "Fictional request"}]}
+                   "content": "Fictional request"}], "sampling_params": {"max_tokens": 8},
+                   "stream": False}
         obj = verify.response_json(verify.request(
             self.base, "/inference/chat_completion", method="POST", payload=payload), 200)
         self.assertEqual(obj, mock.REPLY)
@@ -86,7 +87,7 @@ class MockFixtureChecks(unittest.TestCase):
                     "/inference/chat_completion", method="POST", payload={
                         "model": "fixture-model",
                         "messages": [{"role": "user", "content": "Fictional"}],
-                        "stream": False})
+                        "sampling_params": {}, "stream": False})
                 self.assertEqual(code, 200)
                 completion = json.loads(body)["completion_message"]
                 if mode == "finish_unknown":
@@ -135,7 +136,8 @@ class MockFixtureChecks(unittest.TestCase):
             redirector.server_close()
 
     def test_wrong_upstream_payload_fails_closed(self):
-        payload = {"model": "actual", "messages": []}
+        payload = {"model": "actual", "messages": [{"role": "user", "content": "Fictional"}],
+                   "stream": False}
         verify.request(self.base, "/inference/chat_completion",
                        method="POST", payload=payload)
         with self.assertRaises(verify.VerificationError):

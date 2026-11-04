@@ -28,17 +28,23 @@ The public HTTP interface is loopback-bound by default. The bridge **has no auth
 | Tools/function calls, images, audio, JSON schema, multimodal messages, `/v1/responses` | Unsupported; no translation promised | Not implemented |
 | Native OpenAI authentication, TLS, upstream bearer token forwarding | Unsupported | No internet/LAN deployment |
 
-The adapter currently accepts a `model` string, nonempty `messages` of text-only `system`/`user`/`assistant` roles, plus optional `max_tokens` (nested under legacy `sampling_params`). Sampling strategy controls such as `temperature`, `top_p`, `top_k` and `repeat_penalty` are now rejected rather than falsely forwarded as flat fields. Other fields fail closed instead of silently changing their meaning. It maps older Llama Stack `completion_message` response shapes and normalizes ordinary token usage. **Modern Llama Stack may use different routes or schemas.**
+The adapter currently accepts a `model` string, nonempty `messages` of text-only `system`/`user`/`assistant` roles, plus optional `max_tokens` (nested under legacy `sampling_params`). Sampling strategy controls such as `temperature`, `top_p`, `top_k` and `repeat_penalty` are now rejected rather than falsely forwarded as flat fields. Other fields fail closed instead of silently changing their meaning. It maps the pinned legacy `completion_message` response shape. The pinned upstream response schema has no `usage` field; optional usage-shaped extensions are not part of the compatibility guarantee. **Modern Llama Stack may use different routes or schemas.**
 
 **Legacy source contract:** On 15 October 2026, source inspection pinned a
 historical [Llama Stack inference API revision](https://github.com/meta-llama/llama-stack/blob/37b330b4ef24a9253abba07cf906bf4ac3af6e55/llama_stack/apis/inference/inference.py)
 (31 October 2024) and its [model-list API](https://github.com/meta-llama/llama-stack/blob/37b330b4ef24a9253abba07cf906bf4ac3af6e55/llama_stack/apis/models/models.py).
-That revision uses legacy `/inference/chat_completion` and `/models/list`
-routes, the `model` request field, and nested `sampling_params`.
-The bridge now translates `max_tokens` into the nested structure and
-rejects other unverified sampling options. **This establishes a
-source-level reference, not a pinned deployable upstream version or
-live compatibility evidence.**
+That revision's `setup.py` declares `llama-stack` version `0.0.47` and
+its `requirements.txt` requires `llama-models>=0.0.47`. The exact PyPI
+`llama-stack==0.0.47` and `llama-models==0.0.47` wheels were downloaded
+from files.pythonhosted.org and their SHA-256 values checked against the
+PyPI JSON release metadata. The package route/schema declarations agree
+with the source reference: `/inference/chat_completion`, `/models/list`,
+`model`, and optional `sampling_params` (greedy by default). The bridge
+maps `max_tokens` into that nested structure, supports text-only
+`InterleavedTextMedia`, and rejects nonempty completion tool calls.
+See [the pinned upstream compatibility/provenance record](tests/VERIFICATION.md#pinned-upstream-compatibility-and-package-provenance).
+**This is a source/package-level compatibility target with synthetic
+HTTP coverage, not a live upstream integration or inference test.**
 
 ## Developer quick start — isolated experiments only
 
@@ -88,7 +94,7 @@ python3 -O tests/verify_http.py --self-test
 ```
 
 On 15 October 2026, the original **23 JavaScript tests passed 23/23 under
-actual Node.js v22.22.3 on Ubuntu-GTX** (18 translation checks and five
+actual Node.js v22.22.3 on the Linux test host** (18 translation checks and five
 source/deployment checks). The new **eight Python offline harness tests
 passed 8/8**, including mock HTTP observations, exact wrong-payload and
 leaked-header detection, and both ordinary and optimized-Python
@@ -108,10 +114,13 @@ merged into the public PR branch.
 No GitHub Actions workflow is supplied. Do not enable hosted CI or spend
 external build/inference resources without separate maintainer approval.
 
-### Disposable runtime qualification (not yet executed)
+### Runtime qualification
 
-See [tests/VERIFICATION.md](tests/VERIFICATION.md) for the **existing,
-approval-gated runtime acceptance procedure** and its three files:
+The existing Docker/Compose qualification procedure remains separately
+approval-gated and has not been executed. This PR continuation instead uses
+the pre-existing rootless, network-isolated Alpine NGINX/njs sandbox; details
+and its limitations are recorded in [tests/VERIFICATION.md](tests/VERIFICATION.md).
+See that file for the **existing, approval-gated Docker runtime procedure** and its three files:
 `mock_upstream.py`, `verify_http.py` and `runtime.compose.yaml`.
 A dedicated disposable Linux VM, a distinct Docker daemon, adequate
 headroom, verified immutable base-image/Python-image digests, explicit
@@ -133,8 +142,8 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - **Upstream dependency:** this translation targets an older Llama Stack API, not contemporary universal OpenAI API compatibility.
 - **Security:** no endpoint authentication, no HTTPS, and no support for an authenticated upstream. Default bind is loopback only; even locally, another process may call this bridge.
 - **Content:** text-only chat. Streaming, tools and nontext message content are intentionally rejected.
-- **Resource limits:** the Nginx config caps request body size at 64 KiB, raw-byte buffered subrequest responses at 1 MiB, and source-level per-client concurrency at eight requests. Explicit proxy buffers and disabled proxy temp-file spill are proposed but still need runtime validation. The 30-second upstream read timeout is an **idle I/O timeout, not a hard total request deadline**.
-- **Error behavior:** invalid user requests return HTTP 400; unsupported streaming returns 501; upstream failures, malformed upstream responses and unknown completion stop reasons return generic 502 without returning upstream bodies to clients. Successful completion IDs require `crypto.getRandomValues` with documented `Uint32Array` input in the packaged njs runtime; without it, chat must fail closed. API availability still needs runtime proof.
+- **Resource limits:** request bodies are capped at 64 KiB. The NJS Fetch API enforces a 1 MiB `Content-Length` cap; packaged njs 0.9.6 can buffer chunked responses up to 10 MiB before rejecting, so a post-read UTF-8 byte guard enforces the exact 1 MiB accepted-body limit. A global four-request cap bounds worst-case concurrent chunked buffering to approximately 40 MiB plus read buffers; Compose declares a 256 MiB memory limit. The 30-second upstream timeout is an **idle I/O timeout, not a hard total request deadline**.
+- **Error behavior:** invalid user requests return HTTP 400; unsupported streaming returns 501; upstream failures, malformed upstream responses and unknown completion stop reasons return generic 502 without returning upstream bodies to clients. Successful completion IDs require `crypto.getRandomValues` with documented `Uint32Array` input in the packaged njs runtime; the rootless sandbox proves this API is available in the tested package. Live upstream availability remains unverified.
 - **Build reproducibility:** neither a mutable Alpine base tag nor unversioned package installation is provided by default. Build inputs now require a verified image digest, HTTPS package repository snapshot and explicit package versions. The actual snapshot immutability, transitive checksums and resulting image reproducibility have **not** been independently proven. Fresh-build proof and a dependency vulnerability assessment remain required.
 - **Releases:** no verified live Llama Stack version matrix, independent load test or production incident runbook exists.
 
@@ -143,13 +152,13 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - [x] Separate original prototype claims from demonstrated functionality.
 - [x] Add fail-closed synthetic API checks and remove conversation-body debug logging in source.
 - [x] Add rootless, loopback-only Compose configuration and explicit validated upstream substitution in source.
-- [x] Run the Node 20+ unit/source suite locally (23/23 on Node v22.22.3, 15 October 2026) and Python offline harness checks (8/8).
-- [ ] Independently build the image and run `nginx -t` from a clean checkout on target architectures.
-- [ ] Exercise `/healthz`, models and chat with a **synthetic, local** mock upstream over real HTTP.
-- [ ] Pin and verify one explicitly supported legacy Llama Stack version, and document contemporary upstream incompatibilities.
-- [ ] Prove default host-binding, UID, mounts, memory behavior and absence of sensitive data in logs.
-- [ ] Verify idle upstream timeouts, oversized responses, proxy buffers, NGINX/njs `crypto.getRandomValues` support, high concurrency, startup/shutdown and platform coverage over real HTTP.
-- [ ] Independently audit threat model, dependency provenance, deployment documentation, and versioned release artifacts.
+- [x] Run the offline suites: 39/39 Node tests on Node v26.12.1; 11/11 Python tests on Python 3.10.12; verifier false-PASS controls fail under normal and optimized execution.
+- [ ] Independently build the OCI image and run `nginx -t` from a clean checkout on target architectures (Docker/Compose intentionally not run).
+- [x] Exercise `/healthz`, models and chat with a **synthetic, local** mock upstream over real HTTP: 40/40 checks in the rootless, network-isolated Alpine 3.22 x86-64 sandbox; no live Llama Stack.
+- [x] Pin the source/package API contract to `llama-stack==0.0.47` and `llama-models==0.0.47`; document contemporary upstream incompatibilities. (Source/package and synthetic proof only; no live integration.)
+- [x] Prove rootless sandbox UID/GID 100:101, read-only root, tmpfs `/tmp`, no default route, clean startup/shutdown, and canary-free Nginx/mock logs. Compose loopback binding and 256 MiB memory limit are source-checked, not runtime-proven.
+- [x] Verify idle upstream timeout, fixed-length and chunked response limits (including exact 1 MiB boundaries and njs 10 MiB chunked rejection), `crypto.getRandomValues`, four-request global concurrency, and startup/shutdown over real HTTP on x86-64. ARM64 and Docker/Compose runtime behavior remain unverified.
+- [ ] Obtain a genuine independent exact-diff security/privacy ACCEPT; no reviewer channel currently has positively verified private-source protection, retention and no-unexpected-metered-cost conditions, so no review inference was run.
 - [ ] Assign a stable version **only after** all scoped gates pass; unsupported advanced features need not be added, but must remain explicit.
 
 ## Project files
@@ -161,6 +170,7 @@ See [SECURITY.md](SECURITY.md) for the full trust-boundary and privacy review.
 - `docker-compose.yaml` — loopback-only and resource-constrained deployment.
 - `tests/transform.test.mjs` and `tests/source-contract.test.mjs` — Node synthetic and source regressions.
 - `tests/mock_upstream.py`, `tests/verify_http.py`, `tests/test_harness.py`, and `tests/runtime.compose.yaml` — offline mock, real-HTTP verifier, fail-closed checks and disposable verification configuration.
+
 - `tests/VERIFICATION.md` — explicit runtime approval gates, evidence and cleanup requirements.
 
 ## License
