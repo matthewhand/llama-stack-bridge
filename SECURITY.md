@@ -26,7 +26,7 @@ These controls are visible in source but have **not** been validated in a live c
 ## Local qualification status (15 October 2026)
 
 Actual Node.js v22.22.3 ran the 23 unit/source tests successfully
-on Ubuntu-GTX. Eight Python offline fixture tests passed, including
+on a Linux test host. Eight Python offline fixture tests passed, including
 tests proving bad results are detected with and without Python
 optimization. They exercise **simulated** HTTP fixture behavior;
 there is still no demonstrated actual Nginx/njs HTTP integration,
