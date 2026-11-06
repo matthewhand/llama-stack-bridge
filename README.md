@@ -1,4 +1,4 @@
-![OpenAI-style clients connect to Llama Stack through llama-stack-bridge](docs/assets/llama-stack-bridge-banner.png)
+![llama-stack-bridge translates chat-completion requests and responses between an OpenAI-compatible client and Llama Stack](docs/assets/llama-stack-bridge-banner.png)
 
 # llama-stack-bridge
 
