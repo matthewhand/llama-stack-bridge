@@ -1,3 +1,5 @@
+![OpenAI-style clients connect to Llama Stack through llama-stack-bridge](docs/assets/llama-stack-bridge-banner.png)
+
 # llama-stack-bridge
 
 Bridges Meta's Llama Stack serve endpoint via Nginx JS transform to expose an OpenAI-compatible endpoint.
